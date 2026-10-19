@@ -1,835 +1,146 @@
-// LUNAVYRA core script
-// Implements deterministic infinite profile generation, virtualization, exact ID search,
-// Profiles.txt parsing, deterministic SVG portraits fallback, full viewer, and tests.
-
-// Use module scope to avoid polluting global scope
-const CARD_MIN_WIDTH = 200; // in CSS; used to compute columns
-const ROW_HEIGHT = 260;     // must match CSS :root --row-height
-const BUFFER_ROWS = 8;      // how many rows ahead/behind to buffer
-const MAX_MOUNTED_ROWS = 40; // hard bound on mounted rows to keep DOM small
-const REBASE_THRESHOLD_PX = 5_000_000; // when total spacer grows large, recenter
-const VISIBLE_PREPARE_ROWS = 6; // how many rows to prepare ahead of viewport
-const PROFILE_START_INDEX = 1; // logical mapping: index 1 -> ID '1'
-
-// store profiles.txt user-supplied entries; map idStr -> override object
-let manualProfiles = new Map();
-
-// Utility: console / status reporter shown to user
-const status = {
-  el: null,
-  log(msg) {
-    if (!this.el) return;
-    const p = document.createElement('div');
-    p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    this.el.prepend(p);
-  },
-  clear() { if (this.el) this.el.innerHTML = ''; }
-};
-
-// Deterministic streaming hash: FNV-1a 64-bit (using two 32-bit halves)
-function fnv1a64_from_string(s){
-  // returns two 32-bit parts as seed
-  let h1 = 0x811c9dc5 >>> 0;
-  let h2 = 0x811c9dc5 >>> 0;
-  for (let i = 0; i < s.length; i++){
-    const code = s.charCodeAt(i);
-    h1 ^= code; h1 = (h1 + ((h1 << 1) + (h1 << 4) + (h1 << 7) + (h1 << 8) + (h1 << 24))) >>> 0;
-    h2 ^= code; h2 = (h2 + ((h2 << 1) + (h2 << 4) + (h2 << 7) + (h2 << 8) + (h2 << 24))) >>> 0;
+(() => {
+  'use strict';
+  const ROW_HEIGHT = 196;
+  const WINDOW_HEIGHT = 12000;
+  const RECENTER_HIGH = 9000;
+  const RECENTER_LOW = 2000;
+  const SHIFT_PIXELS = 6000;
+  const SHIFT_ROWS = BigInt(Math.round(SHIFT_PIXELS / ROW_HEIGHT));
+  const BUFFER_ROWS = 4;
+  const MAX_RENDER_ROWS = 20;
+  const $ = (id) => document.getElementById(id);
+  const viewport = $('feedViewport'), feedWindow = $('feedWindow'), rowsRoot = $('virtualRows');
+  const status = $('feedStatus'), searchForm = $('searchForm'), searchInput = $('profileSearch'), searchError = $('searchError');
+  const profileDialog = $('profileDialog'), mediaDialog = $('mediaDialog'), mediaStage = $('mediaStage');
+  let logicalBaseRow = 0n, columns = 2, renderScheduled = false, rendering = false;
+  let lastFocused = null, activeMedia = null, zoom = 1, rotation = 0, currentDetailId = null;
+  let configuredProfiles = new Map(), configuredPosts = new Map(), lastRenderedStart = -1, lastRenderedEnd = -1;
+  const profileCache = new Map();
+  const CACHE_LIMIT = 300;
+  const FIRST_NAMES = ['Mira','Luna','Elara','Sienna','Nadia','Amara','Iris','Freya','Ayla','Zara','Nyla','Serena','Aria','Vera','Mila','Alina','Noelle','Rhea','Kiara','Esme','Talia','Anya','Liora','Selene','Mina','Cleo','Yara','Aurelia','Inaya','Livia','Dahlia','Evelyn','Sofia','Naomi','Aisha','Maya','Lyra','Isla','Camila','Romy','Thea','Arielle','Juno','Elodie','Amina','Cassia','Nerina','Violet','Amelie','Nori','Kira','Sasha','Leona','Maren','Lilia','Odette','Asha','Mirelle','Demi','Rina','Alessia','Lumi','Safiya','Eden'];
+  const LAST_NAMES = ['Vale','Moreau','Voss','Arden','Rey','Solene','Hart','Noir','Marin','Sato','Laurent','Bellamy','Rivers','Ashford','Delacroix','Wren','Hale','Serrano','Kova','Monroe','Ellis','Roux','Winter','Avery','Mori','Bennett','Quinn','Dove','Lennox','Rowan','Aster','Cove','Hayes','Blair','Sloan','Mercer','Vega','Sinclair','Romano','West','Sorel','Marlow','Frost','Leroux','Raine','Mika','Solis','Keane','Orlov','Calder','Virelli','Lark','Everly','Moon','Sterling','Hollis','Rossi','Briar','Skye','Lovelace','Onyx','Mistral','Aurex','Dusk'];
+  const BIOS = ['A quiet romantic who collects little moments and old books.','A confident creative with an eye for unusual details.','A night-owl photographer drawn to city lights.','A thoughtful dreamer who finds beauty in ordinary days.','A modern minimalist with a soft spot for vintage fashion.','An independent spirit who loves art, music, and long walks.','A curious designer who is always chasing a new idea.','A graceful soul with a mysterious, cinematic aesthetic.','A warm-hearted traveler who keeps a journal of places.','An elegant music lover with a taste for midnight jazz.','A playful stylist mixing classic silhouettes with bold details.','An introspective artist inspired by rain, gardens, and poetry.','A future-minded maker who loves clean lines and deep color.','A gentle bookworm with a collection of pressed flowers.','A fearless explorer who turns small adventures into stories.','A polished professional who lives for galleries and cafés.'];
+  const AESTHETICS = ['soft feminine','modern romantic','quiet luxury','gothic elegance','artistic minimalism','dreamy vintage','urban chic','celestial noir','classic glamour','futuristic couture','casual elegance','dark academia','cinematic muse','romantic gothic','creative streetwear','ethereal modern'];
+  const SKIN = ['#f3d2bc','#e8b99b','#cf9678','#a96e54','#80523f','#f1c7b0','#d8a58c','#b98167'];
+  const HAIR = ['#241722','#4b2b25','#8a5637','#d9b67e','#17151f','#6e405e','#b65b4c','#d5c6b6','#343b56','#252b28'];
+  const CLOTHES = ['#292136','#4d233a','#26384a','#57404b','#201d27','#5a3447','#353047','#292d36'];
+  const HAIR_STYLES = ['long waves','sleek bob','soft curls','high ponytail','layered brunette hair','short textured cut','braided style','curtain fringe'];
+  const EYES = ['#4e7b78','#70543f','#4b5f99','#82616f','#4b3d35','#6f8051'];
+  const INTERESTS = ['photography','fashion','painting','music','architecture','travel','books','cinema','gardening','design','coffee','poetry','dance','technology','museums','cooking'];
+  const OCCUPATIONS = ['designer','photographer','architect','illustrator','researcher','musician','writer','curator','filmmaker','botanist','stylist','engineer','chef','dancer','editor','artist'];
+  function hashString(s) { let h = 2166136261; for (let i=0;i<s.length;i++) { h ^= s.charCodeAt(i); h = Math.imul(h,16777619); } return h >>> 0; }
+  function rngFrom(seed) { let a = seed >>> 0; return () => { a += 0x6D2B79F5; let t=a; t=Math.imul(t^(t>>>15),t|1); t^=t+Math.imul(t^(t>>>7),t|61); return ((t^(t>>>14))>>>0)/4294967296; }; }
+  function pick(rng, list) { return list[Math.floor(rng()*list.length)]; }
+  function canonicalId(value) {
+    if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new Error('Enter digits only: a positive decimal ID is required.');
+    const id = value.replace(/^0+/, '');
+    if (!id) throw new Error('ID must be greater than zero.');
+    return id;
   }
-  return [h1 >>> 0, h2 >>> 0];
-}
-
-// Small deterministic PRNG using splitmix-like mixing from two 32-bit seeds
-function makePRNG(seed1, seed2){
-  let s1 = seed1 >>> 0;
-  let s2 = seed2 >>> 0;
-  return function(){
-    // xorshift-ish
-    s1 = (s1 + 0x6D2B79F5) >>> 0;
-    let t = Math.imul(s1 ^ (s1 >>> 15), (s2 | 1));
-    t = (t + Math.imul(s2 ^ (s2 >>> 7), s1)) >>> 0;
-    s2 = (s2 + 0x8A5CD789) >>> 0;
-    const out = ((t ^ (s2 >>> 13)) >>> 0) / 4294967296;
-    return out;
-  };
-}
-
-// Deterministic combinatorial name / bio generation using PRNG seeded by ID string
-const firstNames = ["Mira","Luna","Aria","Celine","Vera","Elise","Noor","Iris","Ayla","Sylva","Rina","Mina","Tessa","Nadia","Seren","Kira","Gia","Liora","Zara","Yuna","Sera","Violet","Rhea","Juno","Lyra","Nova"];
-const lastNames = ["Vale","Rey","Aster","Marin","Duval","Noire","Silva","Corbin","Alaire","Wren","Hollis","Kavan","Moreau","Calix","Delaine","Rowe","Amour","Laine","Blaire","Cade"];
-const adjectives = ["elegant","mysterious","soft","sophisticated","dreamy","modern","romantic","minimalist","luxurious","artistic","gothic","futuristic","casual","refined","playful"];
-const hobbies = ["painting","photography","jazz","literature","design","fashion","surreal art","gardening","travel","architecture","ballet","film","digital art","culinary arts","astronomy"];
-const occupations = ["artist","curator","designer","writer","photographer","architect","musician","illustrator","editor","stylist","researcher","fashion director","composer"];
-
-// generate deterministic profile object {id, name, bio, desc, portraitSVG, portraitURL?}
-function generateProfileFromId(idStr){
-  // canonicalize idStr: strip leading +, ensure digits only
-  const canonical = canonicalizeIdString(idStr);
-  const [s1,s2] = fnv1a64_from_string(canonical);
-  const rand = makePRNG(s1, s2);
-
-  // name selection
-  const first = firstNames[Math.floor(rand()*firstNames.length)];
-  const last = lastNames[Math.floor(rand()*lastNames.length)];
-  const name = `${first} ${last}`;
-
-  // bio and personality
-  const adj = adjectives[Math.floor(rand()*adjectives.length)];
-  const hobby1 = hobbies[Math.floor(rand()*hobbies.length)];
-  const hobby2 = hobbies[Math.floor(rand()*hobbies.length)];
-  const occ = occupations[Math.floor(rand()*occupations.length)];
-  const bio = `${name} — an ${adj} ${occ} who enjoys ${hobby1} and ${hobby2}. A presence that blends modern polish with timeless nuance.`;
-
-  // short description
-  const desc = `${adj.charAt(0).toUpperCase()+adj.slice(1)}. ${hobby1}, ${hobby2}.`;
-
-  // portrait: for supplied manual photos, script will prefer supplied URL; here create deterministic SVG
-  const svg = generatePortraitSVG(canonical, rand);
-
-  return {
-    id: canonical,
-    name,
-    bio,
-    desc,
-    portraitSVG: svg,
-    portraitURL: null // set by manualProfiles when overriding
-  };
-}
-
-// canonical ID string validator/normalizer
-function canonicalizeIdString(input){
-  if (typeof input !== 'string') input = String(input);
-  // Trim whitespace and leading + signs
-  let s = input.trim();
-  if (s.startsWith('+')) s = s.slice(1);
-  // Reject empties or invalid chars
-  if (!/^[0-9]+$/.test(s)) throw new Error('Invalid ID — must be a positive decimal string with no spaces, signs, or decimals.');
-  // Leading zeros: normalize to remove leading zeros (but keep exactly "0" invalid)
-  s = s.replace(/^0+/, '');
-  if (s === '') throw new Error('Invalid ID — zero or all-zero value is not a positive ID.');
-  return s;
-}
-
-// generate a deterministic SVG portrait as a data URL
-function generatePortraitSVG(idStr, rand){
-  // generate palette and shapes driven by rand()
-  const skinTones = ["#f6dbd1","#f0c7b8","#e6b89a","#d4a07a","#c38a63","#9f6b4e","#8a5a43"];
-  const hairColors = ["#1f1f1f","#2f1e3a","#6b2d7a","#5b1a86","#c56b9b","#b36b3b","#40312b","#e0c7bd","#2a4a7a"];
-  const bgColors = ["#0b0510","#0c0714","#0f0512","#0b0720","#100812"];
-  const accColors = ["#8b5cf6","#a855f7","#6ee7b7","#f472b6","#ef4444","#f97316"];
-
-  const skin = skinTones[Math.floor(rand()*skinTones.length)];
-  const hair = hairColors[Math.floor(rand()*hairColors.length)];
-  const bg = bgColors[Math.floor(rand()*bgColors.length)];
-  const accent = accColors[Math.floor(rand()*accColors.length)];
-
-  // facial geometry parameters
-  const faceWidth = 36 + Math.floor(rand()*28);
-  const faceHeight = 44 + Math.floor(rand()*26);
-  const eyeY = 36 + Math.floor(rand()*6);
-  const eyeSpread = 18 + Math.floor(rand()*12);
-  const mouthY = 62 + Math.floor(rand()*8);
-  const hairStyle = Math.floor(rand()*5);
-
-  const svgParts = [];
-  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 140" width="480" height="560" role="img" aria-label="Generated portrait">`);
-  // background
-  svgParts.push(`<rect width="100%" height="100%" fill="${bg}"/>`);
-  // subtle translucent pattern
-  svgParts.push(`<g opacity="0.06"><rect x="0" y="0" width="120" height="140" fill="url(#g1)"/></g>`);
-  // face
-  svgParts.push(`<g transform="translate(60,40)">`);
-  svgParts.push(`<ellipse cx="0" cy="0" rx="${faceWidth/2}" ry="${faceHeight/2}" fill="${skin}"/>`);
-  // eyes
-  svgParts.push(`<g fill="#111">`);
-  svgParts.push(`<ellipse cx="${-eyeSpread/2}" cy="${-eyeY/4}" rx="3.6" ry="2.6"/>`);
-  svgParts.push(`<ellipse cx="${eyeSpread/2}" cy="${-eyeY/4}" rx="3.6" ry="2.6"/>`);
-  svgParts.push(`</g>`);
-  // mouth
-  svgParts.push(`<path d="M${-8} ${mouthY-78} q8 8 16 0" stroke="#900" stroke-width="1.8" fill="none" stroke-linecap="round" transform="scale(1,0.9)"/>`);
-  svgParts.push(`</g>`);
-
-  // hair styles
-  if (hairStyle === 0) {
-    svgParts.push(`<path d="M10 20 Q60 -10 110 20 L110 60 Q60 10 10 60 Z" fill="${hair}" opacity="0.98"/>`);
-  } else if (hairStyle === 1) {
-    svgParts.push(`<path d="M0 20 C30 -10 90 -10 120 20 L120 80 C80 50 40 50 0 80 Z" fill="${hair}"/>`);
-  } else if (hairStyle === 2) {
-    svgParts.push(`<path d="M20 10 Q60 30 100 10 L100 50 Q60 30 20 50 Z" fill="${hair}"/>`);
-    svgParts.push(`<path d="M10 50 Q60 90 110 50" stroke="${hair}" stroke-width="8" stroke-linecap="round" fill="none" opacity="0.9"/>`);
-  } else if (hairStyle === 3) {
-    svgParts.push(`<rect x="6" y="10" width="108" height="38" rx="20" fill="${hair}" />`);
-  } else {
-    svgParts.push(`<path d="M60 0 C30 12 10 44 10 70 Q60 100 110 70 C110 44 90 12 60 0 Z" fill="${hair}"/>`);
+  function incrementDecimal(id) { let chars=id.split(''); for(let i=chars.length-1;i>=0;i--){ if(chars[i]!=='9'){chars[i]=String.fromCharCode(chars[i].charCodeAt(0)+1);return chars.join('');} chars[i]='0'; } return '1'+chars.join(''); }
+  function decrementDecimal(id) { id=canonicalId(id); if(id==='1') return '1'; let chars=id.split(''); for(let i=chars.length-1;i>=0;i--){if(chars[i]!=='0'){chars[i]=String.fromCharCode(chars[i].charCodeAt(0)-1);break;}chars[i]='9';} const out=chars.join('').replace(/^0+/, ''); return out||'1'; }
+  function svgPortrait(id) {
+    const r = rngFrom(hashString(id+'|portrait-v3'));
+    const skin=pick(r,SKIN), hair=pick(r,HAIR), cloth=pick(r,CLOTHES), eyes=pick(r,EYES);
+    const hairStyle=Math.floor(r()*8), fringe=hairStyle%2===0, longHair=hairStyle!==1&&hairStyle!==5;
+    const bg1=pick(r,['#332342','#252c43','#482638','#24252f','#3c2b35','#26223b']);
+    const earring=r()>.45, necklace=r()>.35, blush=r()>.3;
+    const hairBack=longHair?`<path d="M35 91 Q22 36 49 20 Q80 -1 111 25 Q130 45 116 94 L107 125 L41 125Z" fill="${hair}"/>`:'';
+    const fringePath=fringe?`<path d="M39 47 Q43 8 78 16 Q107 13 115 48 L103 42 Q91 53 75 43 Q59 52 42 48Z" fill="${hair}"/>`:'';
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 190"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${bg1}"/><stop offset="1" stop-color="#111019"/></linearGradient><radialGradient id="l"><stop stop-color="#fff" stop-opacity=".18"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="150" height="190" fill="url(#g)"/><circle cx="112" cy="37" r="65" fill="url(#l)"/><circle cx="21" cy="135" r="44" fill="#9b4e7e" opacity=".12"/><path d="M15 190 Q20 137 52 130 L99 130 Q133 141 139 190Z" fill="${cloth}"/><path d="M60 115 L90 115 L101 144 Q75 164 49 144Z" fill="${skin}"/><path d="M45 61 Q44 30 75 28 Q105 29 106 62 L102 99 Q93 120 75 121 Q56 117 48 98Z" fill="${skin}"/><path d="M47 64 Q40 36 58 21 Q83 6 105 26 Q118 39 107 67 L101 43 Q80 54 59 42Z" fill="${hair}"/><path d="M45 66 Q42 43 52 31 Q44 60 53 85 L49 106 Q38 93 45 66Z" fill="${hair}"/><path d="M104 61 Q113 75 104 103 L99 83Z" fill="${hair}"/><path d="M55 69 Q63 64 69 69" stroke="#4b2e2a" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M82 69 Q89 64 96 69" stroke="#4b2e2a" stroke-width="2" fill="none" stroke-linecap="round"/><ellipse cx="63" cy="76" rx="5" ry="3.2" fill="#fff"/><ellipse cx="88" cy="76" rx="5" ry="3.2" fill="#fff"/><circle cx="64" cy="76" r="2.5" fill="${eyes}"/><circle cx="88" cy="76" r="2.5" fill="${eyes}"/><circle cx="65" cy="75" r=".9" fill="#17121b"/><circle cx="89" cy="75" r=".9" fill="#17121b"/><path d="M75 77 L72 89 L77 91" stroke="#b77e69" stroke-width="1.6" fill="none" stroke-linecap="round"/><path d="M66 99 Q75 105 85 98" stroke="#8f4f57" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M52 85 Q61 92 69 86 M82 86 Q91 92 98 84" stroke="#e5a28e" stroke-width="4" opacity="${blush?.25:0}" fill="none" stroke-linecap="round"/>${fringePath}${earring?'<circle cx="48" cy="97" r="2.8" fill="#d9c2a4"/><circle cx="102" cy="97" r="2.8" fill="#d9c2a4"/>':''}${necklace?'<path d="M54 128 Q75 146 96 128" stroke="#d7c0a4" stroke-width="1.5" fill="none"/><circle cx="75" cy="140" r="2" fill="#d7c0a4"/>':''}<path d="M0 177 Q75 161 150 177 V190 H0Z" fill="#000" opacity=".12"/></svg>`;
+    return 'data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(svg);
   }
-
-  // accessory / highlight
-  svgParts.push(`<circle cx="${20 + Math.floor(rand()*60)}" cy="${20 + Math.floor(rand()*30)}" r="${4 + Math.floor(rand()*8)}" fill="${accent}" opacity="0.12"/>`);
-
-  // signature small gradient defs
-  svgParts.push(`<defs>
-    <linearGradient id="g1" x1="0" x2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>
-  </defs>`);
-
-  svgParts.push(`</svg>`);
-
-  const svgStr = svgParts.join('');
-  const encoded = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgStr)));
-  return encoded;
-}
-
-// -------------------- Profiles.txt parsing --------------------
-async function loadProfilesTxt(){
-  try {
-    const path = new URL('./Profiles.txt', location.href).pathname;
-    const res = await fetch(path, {cache: "no-store"});
-    if (!res.ok) throw new Error(`Profiles.txt fetch failed: ${res.status}`);
-    const text = await res.text();
-    parseProfilesTxt(text);
-    status.log(`Loaded Profiles.txt (${manualProfiles.size} records parsed)`);
-  } catch (err){
-    status.log(`Profiles.txt: ${err.message} — falling back to generated profiles.`);
+  function generatedProfile(id) {
+    if (profileCache.has(id)) { const value=profileCache.get(id); profileCache.delete(id); profileCache.set(id,value); return value; }
+    const r=rngFrom(hashString(id+'|identity-v5'));
+    const first=pick(r,FIRST_NAMES), last=pick(r,LAST_NAMES), name=first+' '+last;
+    const bio=pick(r,BIOS), aesthetic=pick(r,AESTHETICS), interests=[pick(r,INTERESTS),pick(r,INTERESTS),pick(r,INTERESTS)];
+    const profile={id,name,bio,aesthetic,interests,occupation:pick(r,OCCUPATIONS),hair:pick(r,HAIR_STYLES),image:svgPortrait(id),mediaType:'image',url:'',source:'generated'};
+    profileCache.set(id,profile); if(profileCache.size>CACHE_LIMIT) profileCache.delete(profileCache.keys().next().value); return profile;
   }
-}
-
-// Format described: records separated by single-line "$", each record has 3 fields: name, mediaURL, profileURL
-function parseProfilesTxt(text){
-  manualProfiles.clear();
-  // Normalize CRLF and trim BOM
-  text = text.replace(/\r\n/g, '\n').replace(/^\uFEFF/, '');
-  // Split by line that contains exactly $
-  const lines = text.split('\n');
-  const records = [];
-  let current = [];
-  for (let i=0;i<lines.length;i++){
-    const line = lines[i].trim();
-    if (line === '$'){
-      if (current.length > 0){
-        records.push(current);
-        current = [];
-      } else {
-        // consecutive $ -> ignore; spec says no unnecessary blank delimiter records
-        continue;
-      }
-    } else {
-      current.push(lines[i]); // keep original spacing in fields
-    }
+  function getProfile(id) { return configuredProfiles.get(id) || generatedProfile(id); }
+  function validHttpUrl(value) { try { const u=new URL(value,document.baseURI); return (u.protocol==='https:'||u.protocol==='http:')?u.href:''; } catch { return ''; } }
+  function mediaKind(url) { const clean=String(url||'').split(/[?#]/,1)[0].toLowerCase(); if(/\.(mp4|webm|ogv|mov)$/.test(clean))return 'video'; if(/\.(jpg|jpeg|png|webp|gif|avif|svg)$/.test(clean))return 'image'; return 'image'; }
+  function parseProfiles(text) {
+    const lines=String(text||'').replace(/^\uFEFF/,'').split(/\r?\n/); const tokens=[]; let field=[];
+    for(const raw of lines){const line=raw.trim(); if(line==='$'){if(field.length)tokens.push(field.join('\n').trim());field=[];continue;} if(line)field.push(line);}
+    if(field.length)tokens.push(field.join('\n').trim());
+    const result=new Map(); let n=1n;
+    for(let i=0;i<tokens.length;i+=3){const name=(tokens[i]||'').slice(0,180); if(!name)continue; const image=validHttpUrl(tokens[i+1]||''); const url=validHttpUrl(tokens[i+2]||''); const id=String(n++); result.set(id,{...generatedProfile(id),id,name,image:image||svgPortrait(id),mediaType:image?mediaKind(image):'image',url,bio:'A profile from the LUNAVYRA local collection.',aesthetic:'curated identity',interests:['personal style','creative life'],occupation:'individual',source:'configured'});}
+    return result;
   }
-  // Final record if file doesn't end with $
-  if (current.length > 0) records.push(current);
-
-  // Each record should have exactly 3 non-empty lines: name, media URL, profile URL.
-  // If malformed, tolerate safely (fill missing fields with null).
-  records.forEach((rec, idx) => {
-    const name = (rec[0] || '').trim() || null;
-    const media = (rec[1] || '').trim() || null;
-    const url = (rec[2] || '').trim() || null;
-    const id = String(idx + PROFILE_START_INDEX);
-    if (name){
-      manualProfiles.set(id, {id, name, media, url});
-    }
-  });
-}
-
-// -------------------- Virtualizer & Feed --------------------
-class VirtualFeed {
-  constructor(feedEl){
-    this.feedEl = feedEl;
-    this.columns = 1;
-    this.rowHeight = ROW_HEIGHT;
-    this.mountedRowStart = 0; // logical row index of first mounted row (0-based)
-    this.mountedRows = [];    // array of row DOM elements
-    this.lock = false; // generation lock
-    this.logicalAnchorId = String(PROFILE_START_INDEX); // id string for top-left displayed slot
-    this.topSpacer = document.createElement('div');
-    this.bottomSpacer = document.createElement('div');
-    this.sentinel = document.createElement('div');
-    this.sentinel.className = 'sentinel';
-    this.sentinel.style.height = '1px';
-    this.feedEl.appendChild(this.topSpacer);
-    this.feedEl.appendChild(this.bottomSpacer);
-    this.feedEl.appendChild(this.sentinel);
-    this.intersectionObserver = null;
-    this.onScrollHandler = null;
-    this.resizeObserver = null;
-    this.init();
+  async function loadData() {
+    try { const response=await fetch('./Profiles.txt',{cache:'no-cache'}); if(!response.ok)throw new Error('Profiles.txt returned '+response.status); configuredProfiles=parseProfiles(await response.text()); }
+    catch(error){ console.info('Profiles.txt unavailable; using generated profiles.',error); status.textContent='Generated identities'; }
+    try { const response=await fetch('./Post.txt',{cache:'no-cache'}); if(response.ok)configuredPosts=parsePosts(await response.text()); }
+    catch(error){ console.info('Optional Post.txt unavailable.',error); }
+    scheduleRender();
   }
-
-  init(){
-    this.updateColumns();
-    window.addEventListener('resize', ()=>this.onViewportResize());
-    // scroll-based replenisher (rAF throttle)
-    let scheduled = false;
-    const viewport = document.getElementById('viewport');
-    this.onScrollHandler = () => {
-      if (!scheduled){
-        scheduled = true;
-        requestAnimationFrame(()=> {
-          scheduled = false;
-          this.ensureBuffer();
-        });
-      }
-    };
-    viewport.addEventListener('scroll', this.onScrollHandler, {passive:true});
-    // IntersectionObserver sentinel
-    this.intersectionObserver = new IntersectionObserver((entries)=>{
-      for (const e of entries){
-        if (e.isIntersecting){
-          this.ensureBuffer();
-        }
-      }
-    }, {root: document.getElementById('viewport'), rootMargin: '800px'});
-    this.intersectionObserver.observe(this.sentinel);
-    // initial render
-    this.recenterToId(this.logicalAnchorId);
+  function parsePosts(text) { const out=new Map(); const records=String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&x!=='$'); for(let i=0;i+1<records.length;i+=2){const id=records[i],content=records[i+1];try{out.set(canonicalId(id),content);}catch{}}return out; }
+  function getColumns() { const width=viewport.clientWidth; return width<620?2:width<920?3:width<1250?4:5; }
+  function makeMedia(profile, className='avatar') {
+    if(profile.mediaType==='video') { const v=document.createElement('video'); v.className=className; v.src=profile.image; v.muted=true; v.playsInline=true; v.preload='none'; v.loop=true; v.setAttribute('aria-label',profile.name+' portrait video'); v.addEventListener('error',()=>{const img=document.createElement('img');img.className=className;img.src=svgPortrait(profile.id);img.alt=profile.name;v.replaceWith(img);},{once:true}); return v; }
+    const img=document.createElement('img'); img.className=className; img.alt=profile.name; img.loading='lazy'; img.decoding='async'; img.src=profile.image||svgPortrait(profile.id); img.addEventListener('error',()=>{img.src=svgPortrait(profile.id);},{once:true}); return img;
   }
-
-  updateColumns(){
-    const containerWidth = Math.max(320, document.getElementById('viewport').clientWidth - 40); // padding
-    const columns = Math.max(1, Math.floor(containerWidth / CARD_MIN_WIDTH));
-    this.columns = columns;
+  function makeCard(id) {
+    const p=getProfile(id), button=document.createElement('button'); button.type='button'; button.className='profile-card'; button.dataset.profileId=id; button.setAttribute('aria-label',`Open ${p.name}, profile ${id}`);
+    const media=makeMedia(p); button.append(media);
+    const meta=document.createElement('span');meta.className='profile-meta';
+    const name=document.createElement('span');name.className='profile-name';name.textContent=p.name;
+    const pid=document.createElement('span');pid.className='profile-id';pid.textContent='#'+id;
+    const teaser=document.createElement('span');teaser.className='profile-teaser';teaser.textContent=p.aesthetic+' · '+p.bio;
+    meta.append(name,pid,teaser);button.append(meta);button.addEventListener('click',()=>openProfile(id));return button;
   }
-
-  onViewportResize(){
-    const prevColumns = this.columns;
-    this.updateColumns();
-    if (this.columns !== prevColumns){
-      // layout changed; re-render to respect new items-per-row
-      this.recenterToId(this.logicalAnchorId, true);
-    } else {
-      // still ensure buffer
-      this.ensureBuffer();
-    }
-  }
-
-  // convert id string to logical index (1-based) and then to row index (0-based)
-  idToRowIndex(idStr){
-    const canonical = canonicalizeIdString(idStr);
-    // compute (id-1) div columns -> row index
-    const itemsPerRow = this.columns;
-    const idxMinus1 = bigintFromDecString(canonical, -1); // BigInt or string
-    // compute divmod by itemsPerRow using string div if needed
-    const rowIdx = divFloorBigIntString(idxMinus1, itemsPerRow);
-    return Number(rowIdx);
-  }
-
-  // Recenter viewport so that idStr appears near top buffer (attempt to show a row containing the id)
-  recenterToId(idStr, preserveVisible=false){
-    const canonical = canonicalizeIdString(idStr);
-    this.logicalAnchorId = canonical;
-    // compute row index for canonical id
-    const rowIndex = this.idToRowIndex(canonical);
-    // We want to mount rows starting at rowIndex - BUFFER_ROWS (but not less than 0)
-    const startRow = Math.max(0, rowIndex - Math.floor(BUFFER_ROWS/2));
-    this.mountRowsAt(startRow);
-    // set scroll so that the desired row is approximately centered/visible.
-    // compute top spacer height to place startRow at top
-    this.topSpacer.style.height = (startRow * this.rowHeight) + 'px';
-    // adjust bottom spacer so total grows
-    // bottom spacer height is arbitrary placeholder for the rest of infinite feed
-    this.bottomSpacer.style.height = (1000000 * this.rowHeight) + 'px'; // large but will be rebased if needed
-    // scroll to the position of the target row
-    const targetRowOffset = (rowIndex - startRow) * this.rowHeight;
-    const viewport = document.getElementById('viewport');
-    viewport.scrollTop = Math.max(0, targetRowOffset);
-    // ensure buffer populated
-    this.ensureBuffer();
-  }
-
-  // mount rows starting at logicalRowStart (0-based)
-  mountRowsAt(logicalRowStart){
-    // clear existing rows
-    for (const r of this.mountedRows) r.remove();
-    this.mountedRows = [];
-    this.mountedRowStart = logicalRowStart;
-    const rowsToMount = Math.min(MAX_MOUNTED_ROWS, 2*BUFFER_ROWS + VISIBLE_PREPARE_ROWS + 4);
-    for (let i = 0; i < rowsToMount; i++){
-      const rowIdx = logicalRowStart + i;
-      const rowEl = this.createRow(rowIdx);
-      this.feedEl.insertBefore(rowEl, this.bottomSpacer);
-      this.mountedRows.push(rowEl);
-    }
-  }
-
-  // create row DOM element for logical row index (0-based)
-  createRow(rowIdx){
-    const row = document.createElement('div');
-    row.className = 'row';
-    row.style.height = this.rowHeight + 'px';
-    // create columns
-    const itemsPerRow = this.columns;
-    // compute first item id for this row: id = rowIdx*itemsPerRow + 1 (convert to decimal string)
-    // We'll compute using BigInt/string functions for correctness
-    const firstId = bigintToDecString(addBigIntString(multiplyBigIntString(String(rowIdx), itemsPerRow), 1));
-    for (let c = 0; c < itemsPerRow; c++){
-      const idx = addBigIntString(firstId, c); // returns decimal string
-      const idStr = canonicalizeIdString(String(idx));
-      const card = this.createCardForId(idStr);
-      row.appendChild(card);
-    }
-    return row;
-  }
-
-  createCardForId(idStr){
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.setAttribute('tabindex','0');
-
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar';
-
-    // load manual profile if exists
-    const manual = manualProfiles.get(idStr);
-    const img = document.createElement('img');
-    img.alt = `Portrait of profile ${idStr}`;
-    img.draggable = false;
-    if (manual && manual.media){
-      // use supplied media (image or video); for cards we put <img> for images, fallback to generated svg if fail
-      img.src = manual.media;
-      img.addEventListener('error', () => {
-        img.src = generateProfileFromId(idStr).portraitSVG;
-      }, {once:true});
-    } else {
-      // generated svg
-      img.src = generateProfileFromId(idStr).portraitSVG;
-    }
-
-    avatar.appendChild(img);
-
-    const nameEl = document.createElement('div');
-    nameEl.className = 'name';
-    nameEl.textContent = manual && manual.name ? manual.name : generateProfileFromId(idStr).name;
-
-    const idEl = document.createElement('div');
-    idEl.className = 'id';
-    idEl.textContent = idStr;
-
-    const descEl = document.createElement('div');
-    descEl.className = 'desc';
-    descEl.textContent = manual && manual.url ? (manual.url) : generateProfileFromId(idStr).desc;
-
-    // clicking avatar opens viewer
-    avatar.addEventListener('click', () => openViewerForId(idStr));
-
-    // keyboard accessible
-    card.addEventListener('keydown', (ev)=>{
-      if (ev.key === 'Enter' || ev.key === ' ') openViewerForId(idStr);
-    });
-
-    card.appendChild(avatar);
-    card.appendChild(nameEl);
-    card.appendChild(idEl);
-    card.appendChild(descEl);
-    return card;
-  }
-
-  // ensure there are sufficient rows ahead of viewport
-  ensureBuffer(){
-    if (this.lock) return;
-    this.lock = true;
-    try{
-      // determine which logical row is at viewport top
-      const viewport = document.getElementById('viewport');
-      const scrollTop = viewport.scrollTop;
-      const topSpacerHeight = parseFloat(this.topSpacer.style.height || '0');
-      // compute first visible row index
-      const firstVisibleRow = Math.max(0, Math.floor((topSpacerHeight + scrollTop) / this.rowHeight) - 1);
-      // ensure mounted rows include firstVisibleRow .. firstVisibleRow + VISIBLE_PREPARE_ROWS + BUFFER_ROWS
-      const desiredStart = Math.max(0, firstVisibleRow - BUFFER_ROWS);
-      if (desiredStart !== this.mountedRowStart){
-        // rebase mounted rows near desiredStart
-        this.mountRowsAt(desiredStart);
-        this.topSpacer.style.height = (desiredStart * this.rowHeight) + 'px';
-      }
-
-      // ensure bottom spacer is large enough; if bottom spacer or top spacer exceed threshold, rebase
-      const totalSpacer = parseFloat(this.topSpacer.style.height || '0') + parseFloat(this.bottomSpacer.style.height || '0');
-      if (totalSpacer > REBASE_THRESHOLD_PX){
-        this.rebasePhysicalWindow();
-      }
-
-      // ensure sentinel remains after mounted rows
-      // update bottomSpacer so we keep a large canvas but not infinite growth
-      const large = 2_000_000 * this.rowHeight;
-      this.bottomSpacer.style.height = large + 'px';
-    } finally {
-      this.lock = false;
-    }
-  }
-
-  // recenter physical scroll window to trim huge spacer heights while preserving visible content
-  rebasePhysicalWindow(){
-    const viewport = document.getElementById('viewport');
-    const visibleScroll = viewport.scrollTop;
-    // compute logical row currently at top: floor((topSpacer + scrollTop) / rowHeight)
-    const topSpacerHeight = parseFloat(this.topSpacer.style.height || '0');
-    const currentTopRow = Math.floor((topSpacerHeight + visibleScroll) / this.rowHeight);
-    // choose new top spacer to be currentTopRow * rowHeight but within reasonable bounds
-    const newTopSpacerRows = Math.max(0, currentTopRow - Math.floor(MAX_MOUNTED_ROWS/3));
-    const newTopSpacerHeight = newTopSpacerRows * this.rowHeight;
-    // set new top spacer and bottom spacer accordingly
-    this.topSpacer.style.height = newTopSpacerHeight + 'px';
-    this.bottomSpacer.style.height = (2_000_000 * this.rowHeight) + 'px';
-    // adjust mounted rows to start near newTopSpacerRows
-    this.mountRowsAt(newTopSpacerRows);
-    // set scrollTop so that the visible row remains visually in same position
-    const newScrollTop = (currentTopRow - newTopSpacerRows) * this.rowHeight;
-    viewport.scrollTop = newScrollTop;
-    status.log('Rebased physical scroll window to avoid huge coordinates.');
-  }
-}
-
-// -------------------- Exact decimal utilities --------------------
-
-// Attempt to produce BigInt from decimal string; if subtract is requested via delta param use BigInt math
-function bigintFromDecString(decStr, delta=0){
-  // returns BigInt or decimal string when too large? Here we use BigInt for reasonable sizes
-  // We'll attempt to use BigInt; for extremely long strings, it's still supported by JS but could be slow.
-  try {
-    const b = BigInt(decStr);
-    if (delta === 0) return b;
-    return b + BigInt(delta);
-  } catch (e){
-    // fallback: implement addition/subtraction via string math
-    if (delta === 0) return decStr;
-    return addBigIntString(decStr, delta);
-  }
-}
-// add integer delta (non-negative small integer) to decimal string (decStr)
-function addBigIntString(decStr, delta){
-  // ensure delta is integer (could be number)
-  delta = Number(delta);
-  if (!Number.isFinite(delta)) throw new Error('delta must be finite');
-  let a = decStr.split('').map(ch => parseInt(ch,10));
-  let carry = delta;
-  for (let i = a.length - 1; i >= 0 && carry > 0; i--){
-    const sum = a[i] + (carry % 10);
-    a[i] = sum % 10;
-    carry = Math.floor(carry / 10) + Math.floor(sum / 10);
-  }
-  while (carry > 0){
-    a.unshift(carry % 10);
-    carry = Math.floor(carry / 10);
-  }
-  // remove leading zeros
-  while (a.length > 1 && a[0] === 0) a.shift();
-  return a.join('');
-}
-
-function multiplyBigIntString(decStr, multiplier){
-  multiplier = Number(multiplier);
-  if (!Number.isFinite(multiplier)) throw new Error('multiplier must be finite');
-  const a = decStr.split('').reverse().map(d => parseInt(d,10));
-  const out = [];
-  let carry = 0;
-  for (let i = 0; i < a.length; i++){
-    const prod = a[i]*multiplier + carry;
-    out[i] = prod % 10;
-    carry = Math.floor(prod/10);
-  }
-  while (carry>0){
-    out.push(carry%10);
-    carry = Math.floor(carry/10);
-  }
-  while (out.length > 1 && out[out.length-1] === 0) out.pop();
-  return out.reverse().join('');
-}
-
-// divide decimal string by small integer divisor, returning floor(div) as decimal string
-function divFloorBigIntString(decStr, divisor){
-  // divisor is a small integer
-  divisor = Number(divisor);
-  if (divisor <= 0) throw new Error('divisor must be positive');
-  // Fast path: if decStr small enough, use BigInt
-  try {
-    const b = BigInt(decStr);
-    const q = b / BigInt(divisor);
-    return q.toString();
-  } catch(e){
-    // long division
-    let carry = 0;
-    let out = '';
-    for (let i = 0; i < decStr.length; i++){
-      const cur = carry*10 + parseInt(decStr[i],10);
-      const q = Math.floor(cur/divisor);
-      out += String(q);
-      carry = cur - q*divisor;
-    }
-    out = out.replace(/^0+/, '');
-    if (out === '') out = '0';
-    return out;
-  }
-}
-
-function bigintToDecString(b){
-  if (typeof b === 'bigint') return b.toString();
-  return String(b);
-}
-
-// -------------------- Viewer --------------------
-const viewerState = {
-  overlay: null,
-  mediaEl: null,
-  zoom: 1,
-  rotate: 0
-};
-
-function openViewerForId(idStr){
-  // prefer manual media if present
-  const manual = manualProfiles.get(idStr);
-  let src = null;
-  if (manual && manual.media) {
-    src = manual.media;
-  } else {
-    src = generateProfileFromId(idStr).portraitSVG;
-  }
-  const overlay = document.getElementById('viewerOverlay');
-  const media = document.getElementById('viewerMedia');
-  media.src = src;
-  media.alt = `Portrait of ${idStr}`;
-  overlay.classList.remove('hidden');
-  viewerState.overlay = overlay;
-  viewerState.mediaEl = media;
-  viewerState.zoom = 1;
-  viewerState.rotate = 0;
-  applyViewerTransform();
-}
-
-function applyViewerTransform(){
-  const img = viewerState.mediaEl;
-  if (!img) return;
-  img.style.transform = `scale(${viewerState.zoom}) rotate(${viewerState.rotate}deg)`;
-}
-
-function closeViewer(){
-  const overlay = document.getElementById('viewerOverlay');
-  overlay.classList.add('hidden');
-  if (viewerState.mediaEl){
-    viewerState.mediaEl.src = '';
-  }
-  viewerState.overlay = null;
-  viewerState.mediaEl = null;
-}
-
-// -------------------- Search UI --------------------
-function setupSearchUI(virtualFeed){
-  const searchToggle = document.getElementById('searchToggle');
-  const searchContainer = document.getElementById('searchContainer');
-  const searchForm = document.getElementById('searchForm');
-  const searchInput = document.getElementById('searchInput');
-  const searchClose = document.getElementById('searchClose');
-  const searchError = document.getElementById('searchError');
-
-  searchToggle.addEventListener('click', ()=>{
-    searchContainer.classList.toggle('hidden');
-    searchContainer.setAttribute('aria-hidden', String(searchContainer.classList.contains('hidden')));
-    if (!searchContainer.classList.contains('hidden')){
-      searchInput.focus();
-    }
-  });
-
-  searchClose.addEventListener('click', ()=>{
-    searchContainer.classList.add('hidden');
-    searchContainer.setAttribute('aria-hidden','true');
-    searchToggle.focus();
-  });
-
-  searchForm.addEventListener('submit', (ev)=>{
-    ev.preventDefault();
-    searchError.textContent = '';
-    const raw = searchInput.value || '';
+  function scheduleRender() { if(renderScheduled)return; renderScheduled=true; requestAnimationFrame(()=>{renderScheduled=false;try{renderWindow();}catch(error){console.error('Feed render recovered from an error.',error);status.textContent='Refreshing profiles…';setTimeout(()=>scheduleRender(),80);}}); }
+  function renderWindow() {
+    if(rendering)return;rendering=true;
     try {
-      const canonical = canonicalizeIdString(raw);
-      status.log(`Searching for ID ${canonical}`);
-      // Navigate virtual feed to canonical
-      virtualFeed.recenterToId(canonical);
-      // Close search
-      searchContainer.classList.add('hidden');
-    } catch(err){
-      searchError.textContent = err.message;
-      status.log(`Search error: ${err.message}`);
-    }
-  });
-}
-
-// -------------------- Initialization --------------------
-async function init(){
-  status.el = document.getElementById('consoleBody');
-  status.log('Initializing LUNAVYRA');
-
-  await loadProfilesTxt(); // load manual overrides if present
-
-  const feedEl = document.getElementById('feed');
-  const virtualFeed = new VirtualFeed(feedEl);
-
-  setupSearchUI(virtualFeed);
-
-  // Setup viewer controls
-  document.getElementById('viewerClose').addEventListener('click', closeViewer);
-  document.getElementById('viewerZoomIn').addEventListener('click', ()=>{ viewerState.zoom *= 1.2; applyViewerTransform(); });
-  document.getElementById('viewerZoomOut').addEventListener('click', ()=>{ viewerState.zoom /= 1.2; applyViewerTransform(); });
-  document.getElementById('viewerRotate').addEventListener('click', ()=>{ viewerState.rotate = (viewerState.rotate + 90) % 360; applyViewerTransform(); });
-  document.getElementById('viewerReset').addEventListener('click', ()=>{ viewerState.rotate = 0; viewerState.zoom = 1; applyViewerTransform(); });
-
-  // close on overlay click (outside image)
-  document.getElementById('viewerOverlay').addEventListener('click', (ev)=>{
-    if (ev.target.id === 'viewerOverlay') closeViewer();
-  });
-
-  // keyboard for viewer
-  window.addEventListener('keydown', (ev)=>{
-    if (ev.key === 'Escape' && viewerState.overlay && !viewerState.overlay.classList.contains('hidden')){
-      closeViewer();
-    }
-  });
-
-  // Kick off tests (they run in the browser environment and report their results)
-  runTests(virtualFeed);
-}
-
-// -------------------- Tests --------------------
-function runTests(virtualFeed){
-  const results = [];
-  const log = (msg)=>{ status.log(msg); results.push(msg); };
-
-  // A. Infinite generation: simulate 500 extension cycles on generator (non-DOM) to avoid freezing
-  try {
-    log('Test A: Infinite generation simulation (generator only) — 500 cycles');
-    let currentIdStr = '1';
-    for (let i=0; i<500; i++){
-      const nextId = incrementDecimalString(currentIdStr);
-      // generate profile for nextId to ensure it can produce data
-      const p = generateProfileFromId(nextId);
-      if (!p || !p.id || !p.name) throw new Error('Generator failed at cycle ' + i);
-      currentIdStr = nextId;
-    }
-    log('Test A passed: generator produced 500 sequential deterministic profiles.');
-  } catch(err){
-    log('Test A failed: ' + err.message);
+      const nextColumns=getColumns(); if(nextColumns!==columns){columns=nextColumns;lastRenderedStart=-1;lastRenderedEnd=-1;}
+      const rowHeight=window.matchMedia('(max-width: 430px)').matches?166:ROW_HEIGHT;
+      document.documentElement.style.setProperty('--row-height',rowHeight+'px');
+      const physicalRow=Math.floor(viewport.scrollTop/rowHeight);
+      const visibleCount=Math.ceil(viewport.clientHeight/rowHeight);
+      const start=Math.max(0,physicalRow-BUFFER_ROWS), end=Math.min(Math.floor(WINDOW_HEIGHT/rowHeight)-1,physicalRow+visibleCount+BUFFER_ROWS);
+      if(start===lastRenderedStart&&end===lastRenderedEnd)return;
+      const fragment=document.createDocumentFragment();
+      for(let row=start;row<=end;row++){
+        const rowEl=document.createElement('div');rowEl.className='profile-row';rowEl.style.top=(row*rowHeight)+'px';rowEl.style.height=rowHeight+'px';rowEl.style.setProperty('--columns',columns);
+        const logicalRow=logicalBaseRow+BigInt(row);
+        for(let col=0;col<columns;col++){const id=String(logicalRow*BigInt(columns)+BigInt(col)+1n);rowEl.append(makeCard(id));}
+        fragment.append(rowEl);
+      }
+      rowsRoot.replaceChildren(fragment);lastRenderedStart=start;lastRenderedEnd=end;status.textContent='';
+    } finally {rendering=false;}
   }
-
-  // B. No-reachable-bottom architecture (test rebase function logic)
-  try {
-    log('Test B: Rebase logic simulation');
-    // artificially expand spacers and invoke rebase
-    virtualFeed.topSpacer.style.height = (10_000_000 * virtualFeed.rowHeight) + 'px';
-    virtualFeed.bottomSpacer.style.height = (12_000_000 * virtualFeed.rowHeight) + 'px';
-    virtualFeed.rebasePhysicalWindow();
-    log('Test B passed: rebase performed without throwing.');
-  } catch(err){
-    log('Test B failed: ' + err.message);
+  function rebaseIfNeeded() {
+    const top=viewport.scrollTop; const rowHeight=window.matchMedia('(max-width: 430px)').matches?166:ROW_HEIGHT;
+    if(top>RECENTER_HIGH){const shift=Math.min(SHIFT_PIXELS,Math.max(0,top-RECENTER_LOW));const rows=BigInt(Math.round(shift/rowHeight));const actual=Number(rows)*rowHeight;logicalBaseRow+=rows;viewport.scrollTop=Math.max(0,top-actual);lastRenderedStart=-1;lastRenderedEnd=-1;}
+    else if(top<RECENTER_LOW && logicalBaseRow>0n){const maxRows=logicalBaseRow<SHIFT_ROWS?logicalBaseRow:SHIFT_ROWS;const shift=Number(maxRows)*rowHeight;logicalBaseRow-=maxRows;viewport.scrollTop=top+shift;lastRenderedStart=-1;lastRenderedEnd=-1;}
+    scheduleRender();
   }
-
-  // C. Exact ID search tests - check sample IDs including very long ones
-  try {
-    log('Test C: Exact ID search and generation for sample IDs');
-    const testIds = [
-      '1',
-      '99',
-      '100',
-      '1000000',
-      '1'.repeat(100), // 100-digit
-      '2'.repeat(500), // 500-digit
-      '3'.repeat(1000) // 1000-digit
-    ];
-    for (const id of testIds){
-      const canonical = canonicalizeIdString(id);
-      // Attempt to generate profile without iterating preceding items
-      const p = generateProfileFromId(canonical);
-      if (!p || p.id !== canonical) throw new Error('Failed to generate exact-id profile for ' + id);
-      log(`  ID ${id.slice(0,24)}... (${id.length} digits) generated as ${p.name}`);
-    }
-    // Test incrementing very large IDs
-    const inc = incrementDecimalString('9'.repeat(64));
-    if (!/^[1][0]+$/.test(inc)) {
-      log('Note: increment of all-9s produced ' + inc.slice(0,30) + '...'); // still acceptable
-    }
-    log('Test C passed: exact-id generation and incrementing passed for requested IDs.');
-  } catch(err){
-    log('Test C failed: ' + err.message);
+  viewport.addEventListener('scroll',rebaseIfNeeded,{passive:true});
+  window.addEventListener('resize',()=>{lastRenderedStart=-1;lastRenderedEnd=-1;scheduleRender();});
+  $('searchToggle').addEventListener('click',()=>{const opening=searchForm.hidden;searchForm.hidden=!opening;$('searchToggle').setAttribute('aria-expanded',String(opening));if(opening)searchInput.focus();});
+  searchForm.addEventListener('submit',(event)=>{event.preventDefault();try{const id=canonicalId(searchInput.value);searchError.textContent='';openProfile(id);searchForm.hidden=true;$('searchToggle').setAttribute('aria-expanded','false');}catch(error){searchError.textContent=error.message;searchInput.focus();}});
+  function openProfile(id) {
+    id=canonicalId(id);const p=getProfile(id);currentDetailId=id;lastFocused=document.activeElement;
+    $('detailId').textContent='#'+id;$('detailName').textContent=p.name;$('detailBio').textContent=p.bio;
+    const portrait=$('detailPortrait');portrait.replaceChildren(makeMedia(p,'detail-media'));
+    const media=portrait.firstElementChild;media.style.width='100%';media.style.aspectRatio='3 / 4';media.style.objectFit='cover';media.style.borderRadius='15px';
+    const tags=$('detailTags');tags.replaceChildren();[p.aesthetic,p.occupation,...p.interests].slice(0,5).forEach(t=>{const span=document.createElement('span');span.className='tag';span.textContent=t;tags.append(span);});
+    const post=configuredPosts.get(id);if(post){const para=document.createElement('p');para.textContent=post;$('detailBio').append(document.createTextNode(' '+post));}
+    profileDialog.hidden=false;$('nextProfile').focus();
   }
-
-  // D. Data file and media failures
-  try {
-    log('Test D: Profiles.txt malformed records and missing media handling');
-    // create a malformed entry and ensure parser doesn't throw
-    try {
-      parseProfilesTxt("$\nOnlyName\n$\nno-media\n"); // intentionally malformed
-      log('  Parser tolerated malformed Profiles.txt.');
-    } catch(e){
-      throw e;
-    }
-    log('Test D passed.');
-  } catch(err){
-    log('Test D failed: ' + err.message);
-  }
-
-  // E. Performance sanity: ensure DOM mounted rows remain bounded
-  try {
-    log('Test E: Virtualizer bounded DOM check');
-    // Simulate heavy scrolling by repeatedly calling ensureBuffer
-    for (let i=0;i<200;i++){
-      virtualFeed.ensureBuffer();
-    }
-    if (virtualFeed.mountedRows.length > MAX_MOUNTED_ROWS + 10) throw new Error('Too many mounted rows: ' + virtualFeed.mountedRows.length);
-    log('Test E passed: mounted rows remained bounded: ' + virtualFeed.mountedRows.length);
-  } catch(err){
-    log('Test E failed: ' + err.message);
-  }
-
-  // F. Honest reporting: list tests that cannot be comprehensively executed automatically
-  log('Note: Some tests are environment-specific and cannot be fully executed in-page:');
-  log('  - Real-device low-memory performance on budget Android phones (manual test).');
-  log('  - Real-world image/video network failure sequences across CDNs (partial simulation done).');
-  log('  - Long-duration scrolling memory profiling beyond client session (manual/profiling tools).');
-
-  // present summarized results in console UI
-  status.log('Automated tests finished. See logs above for details.');
-}
-
-// increment decimal string by 1, returns new decimal string
-function incrementDecimalString(decStr){
-  // operate on string digits
-  let res = decStr.split('').map(d=>parseInt(d,10));
-  let i = res.length - 1;
-  let carry = 1;
-  while (i >= 0 && carry){
-    const s = res[i] + carry;
-    res[i] = s % 10;
-    carry = Math.floor(s / 10);
-    i--;
-  }
-  if (carry) res.unshift(carry);
-  return res.join('');
-}
-
-// Helper: divide by columns when computing row index for idToRowIndex
-// For speed: if idStr small use BigInt else string division (divFloorBigIntString)
-function divFloorBySmall(decStr, small){
-  try {
-    const q = BigInt(decStr) / BigInt(small);
-    return q.toString();
-  } catch(e){
-    return divFloorBigIntString(decStr, small);
-  }
-}
-
-// Add small number to decStr (string)
-function addDecimalString(decStr, small){
-  return addBigIntString(decStr, small);
-}
-
-// multiply (string * small) -> string
-function multiplyDecimalString(decStr, small){
-  return multiplyBigIntString(decStr, small);
-}
-
-// -------------------- Boot --------------------
-document.addEventListener('DOMContentLoaded', () => {
-  try {
-    init();
-  } catch(err){
-    console.error(err);
-    alert('Initialization error: ' + err.message);
-  }
-});
+  $('nextProfile').addEventListener('click',()=>openProfile(incrementDecimal(currentDetailId||'1')));
+  function closeDialog(dialog) { if(dialog===mediaDialog){if(activeMedia&&activeMedia.tagName==='VIDEO')activeMedia.pause();mediaStage.replaceChildren();activeMedia=null;}dialog.hidden=true;if(lastFocused&&typeof lastFocused.focus==='function')lastFocused.focus(); }
+  document.querySelectorAll('[data-close]').forEach(btn=>btn.addEventListener('click',()=>closeDialog($(btn.dataset.close))));
+  $('detailPortrait').addEventListener('click',()=>{if(currentDetailId)openMedia(getProfile(currentDetailId));});
+  function openMedia(profile) { lastFocused=document.activeElement;mediaStage.replaceChildren();const m=makeMedia(profile,'viewer-media');m.className='viewer-media';m.style.maxWidth='100%';m.style.maxHeight='100%';m.style.objectFit='contain';m.style.transform='scale(1) rotate(0deg)';if(m.tagName==='VIDEO'){m.controls=true;m.preload='metadata';m.muted=false;}else{m.draggable=false;}activeMedia=m;zoom=1;rotation=0;mediaStage.append(m);mediaDialog.hidden=false;$('zoomReset').focus(); }
+  $('zoomIn').addEventListener('click',()=>{zoom=Math.min(5,zoom+.25);applyTransform();});$('zoomOut').addEventListener('click',()=>{zoom=Math.max(.5,zoom-.25);applyTransform();});$('zoomReset').addEventListener('click',()=>{zoom=1;rotation=0;applyTransform();});$('rotateMedia').addEventListener('click',()=>{rotation=(rotation+90)%360;applyTransform();});
+  function applyTransform(){if(activeMedia)activeMedia.style.transform=`scale(${zoom}) rotate(${rotation}deg)`;}
+  $('fullscreenMedia').addEventListener('click',async()=>{try{if(!document.fullscreenElement)await mediaDialog.requestFullscreen();else await document.exitFullscreen();}catch(error){console.info('Fullscreen is not available.',error);}});
+  document.addEventListener('keydown',(event)=>{if(event.key==='Escape'){if(!mediaDialog.hidden)closeDialog(mediaDialog);else if(!profileDialog.hidden)closeDialog(profileDialog);else if(!searchForm.hidden){searchForm.hidden=true;$('searchToggle').setAttribute('aria-expanded','false');$('searchToggle').focus();}}});
+  // Exported pure helpers make the actual generator and exact-ID rules testable without a browser.
+  window.LUNAVYRA_TEST_API={canonicalId,incrementDecimal,decrementDecimal,generatedProfile,parseProfiles,hashString,constants:{ROW_HEIGHT,WINDOW_HEIGHT,RECENTER_HIGH,RECENTER_LOW,SHIFT_PIXELS}};
+  loadData();scheduleRender();
+})();

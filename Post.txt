@@ -1,0 +1,7 @@
+# Optional format: one profile ID, then its post text, each on a separate line.
+# Example:
+# $
+# 1
+# $
+# A little note attached to profile 1.
+# $

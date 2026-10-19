@@ -1,54 +1,46 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>LUNAVYRA — Infinite Profiles</title>
-  <link rel="stylesheet" href="./style.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#09080d">
+  <meta name="description" content="LUNAVYRA — an endlessly expanding universe of fictional identities.">
+  <title>LUNAVYRA</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./script.js" defer></script>
 </head>
 <body>
-  <div id="app">
-    <header class="topbar" role="banner" aria-label="LUNAVYRA header">
-      <div class="brand" aria-hidden="true">LUNAVYRA</div>
-      <button id="searchToggle" class="icon-btn" aria-label="Search profile by ID" title="Search by exact ID">
-        🔎
+  <main id="app" aria-label="LUNAVYRA profile universe">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="LUNAVYRA home">LUNAVYRA</a>
+      <button id="searchToggle" class="icon-button" type="button" aria-label="Search profile ID" aria-expanded="false" title="Search profile ID">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6"></circle><path d="m16 16 4.3 4.3"></path></svg>
       </button>
-    </header>
-
-    <div id="searchContainer" class="search-container hidden" aria-hidden="true">
-      <form id="searchForm" autocomplete="off" novalidate>
-        <label for="searchInput" class="visually-hidden">Profile ID</label>
-        <input id="searchInput" type="text" inputmode="numeric" placeholder="Enter exact decimal ID" aria-label="Profile ID" />
-        <button type="submit" class="pill-btn">Go</button>
-        <button id="searchClose" type="button" class="ghost-btn" aria-label="Close search">✕</button>
-        <div id="searchError" class="error" aria-live="polite"></div>
+      <form id="searchForm" class="search-panel" hidden role="search">
+        <label for="profileSearch">Exact profile ID</label>
+        <div class="search-line"><input id="profileSearch" name="profileId" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="Enter a positive decimal ID"><button type="submit">Open</button></div>
+        <p id="searchError" class="search-error" role="status" aria-live="polite"></p>
       </form>
-    </div>
+    </header>
+    <section id="feedViewport" class="feed-viewport" aria-label="Infinite profile feed" tabindex="0">
+      <div id="feedWindow" class="feed-window"><div id="virtualRows" class="virtual-rows"></div></div>
+      <div id="feedStatus" class="feed-status" aria-live="polite">Preparing profiles…</div>
+    </section>
+  </main>
 
-    <main id="viewport" class="viewport" role="main" aria-label="Profile feed">
-      <!-- Virtualizer will inject content here: topSpacer, rows, bottomSpacer, sentinel -->
-      <div id="feed" class="feed" tabindex="0"></div>
-    </main>
-
-    <div id="viewerOverlay" class="viewer-overlay hidden" role="dialog" aria-modal="true" aria-label="Portrait viewer">
-      <div class="viewer-toolbar">
-        <button id="viewerZoomIn" class="icon-btn" title="Zoom in">＋</button>
-        <button id="viewerZoomOut" class="icon-btn" title="Zoom out">－</button>
-        <button id="viewerRotate" class="icon-btn" title="Rotate">⤾</button>
-        <button id="viewerReset" class="icon-btn" title="Reset">↺</button>
-        <button id="viewerClose" class="icon-btn" title="Close">✕</button>
-      </div>
-      <div id="viewerContent" class="viewer-content">
-        <img id="viewerMedia" alt="" draggable="false" />
-      </div>
-    </div>
-
-    <aside id="console" class="console" aria-live="polite">
-      <strong>Test & status console</strong>
-      <div id="consoleBody" class="console-body"></div>
-    </aside>
+  <div id="profileDialog" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="detailName">
+    <section class="detail-panel">
+      <button class="close-button" type="button" data-close="profileDialog" aria-label="Close profile">×</button>
+      <div id="detailPortrait" class="detail-portrait"></div>
+      <div class="detail-copy"><p class="eyebrow">PROFILE <span id="detailId"></span></p><h1 id="detailName"></h1><p id="detailBio"></p><div id="detailTags" class="tag-list"></div><button id="nextProfile" class="primary-button" type="button">Next profile →</button></div>
+    </section>
   </div>
 
-  <script src="./script.js" type="module"></script>
+  <div id="mediaDialog" class="overlay media-overlay" hidden role="dialog" aria-modal="true" aria-label="Portrait viewer">
+    <button class="close-button media-close" type="button" data-close="mediaDialog" aria-label="Close viewer">×</button>
+    <div id="mediaStage" class="media-stage"></div>
+    <div class="media-controls"><button id="zoomOut" type="button" aria-label="Zoom out">−</button><button id="zoomReset" type="button">Reset</button><button id="zoomIn" type="button" aria-label="Zoom in">+</button><button id="rotateMedia" type="button">Rotate</button><button id="fullscreenMedia" type="button">Fullscreen</button></div>
+  </div>
+  <noscript><p class="noscript">LUNAVYRA needs JavaScript to generate profiles.</p></noscript>
 </body>
 </html>
