@@ -1,0 +1,19 @@
+$
+Mira Vale
+$
+https://upload.wikimedia.org/wikipedia/commons/8/89/Portrait_Placeholder.png
+$
+https://example.com/mira-profile
+$
+Luna Rey
+$
+https://upload.wikimedia.org/wikipedia/commons/7/73/Placeholder_face.png
+$
+https://example.com/luna-profile
+$
+Elise Marin
+$
+https://upload.wikimedia.org/wikipedia/commons/4/46/Portrait-Example.png
+$
+https://example.com/elise-profile
+$
