@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LUNAVYRA — Infinite Profiles</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar" role="banner" aria-label="LUNAVYRA header">
+      <div class="brand" aria-hidden="true">LUNAVYRA</div>
+      <button id="searchToggle" class="icon-btn" aria-label="Search profile by ID" title="Search by exact ID">
+        🔎
+      </button>
+    </header>
+
+    <div id="searchContainer" class="search-container hidden" aria-hidden="true">
+      <form id="searchForm" autocomplete="off" novalidate>
+        <label for="searchInput" class="visually-hidden">Profile ID</label>
+        <input id="searchInput" type="text" inputmode="numeric" placeholder="Enter exact decimal ID" aria-label="Profile ID" />
+        <button type="submit" class="pill-btn">Go</button>
+        <button id="searchClose" type="button" class="ghost-btn" aria-label="Close search">✕</button>
+        <div id="searchError" class="error" aria-live="polite"></div>
+      </form>
+    </div>
+
+    <main id="viewport" class="viewport" role="main" aria-label="Profile feed">
+      <!-- Virtualizer will inject content here: topSpacer, rows, bottomSpacer, sentinel -->
+      <div id="feed" class="feed" tabindex="0"></div>
+    </main>
+
+    <div id="viewerOverlay" class="viewer-overlay hidden" role="dialog" aria-modal="true" aria-label="Portrait viewer">
+      <div class="viewer-toolbar">
+        <button id="viewerZoomIn" class="icon-btn" title="Zoom in">＋</button>
+        <button id="viewerZoomOut" class="icon-btn" title="Zoom out">－</button>
+        <button id="viewerRotate" class="icon-btn" title="Rotate">⤾</button>
+        <button id="viewerReset" class="icon-btn" title="Reset">↺</button>
+        <button id="viewerClose" class="icon-btn" title="Close">✕</button>
+      </div>
+      <div id="viewerContent" class="viewer-content">
+        <img id="viewerMedia" alt="" draggable="false" />
+      </div>
+    </div>
+
+    <aside id="console" class="console" aria-live="polite">
+      <strong>Test & status console</strong>
+      <div id="consoleBody" class="console-body"></div>
+    </aside>
+  </div>
+
+  <script src="./script.js" type="module"></script>
+</body>
+</html>
